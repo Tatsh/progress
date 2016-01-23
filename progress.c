@@ -54,7 +54,10 @@
 
 char *proc_names[] = {"cp", "mv", "dd", "tar", "gzip", "gunzip", "cat",
     "grep", "fgrep", "egrep", "cut", "sort", "xz", "md5sum", "sha1sum",
-    "sha224sum", "sha256sum", "sha384sum", "sha512sum", "adb", NULL
+    "sha224sum", "sha256sum", "sha384sum", "sha512sum", "adb",
+    // Coreutils with 'g' prefixes (MacPorts, BSD, Solaris, etc)
+    "gcp", "gmv", "gdd", "gnutar", "gcat", "gcut", "gsort", "gmd5sum",
+    "gsha1sum", "gsha224sum", "gssha256sum", "gsha384sum", "gsha512sum", NULL
 };
 
 static int proc_specifiq_name_cnt;
