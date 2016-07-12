@@ -52,25 +52,31 @@
 #include "sizes.h"
 #include "hlist.h"
 
-char *proc_names[] = {"cp", "mv", "dd", "tar", "gzip", "gunzip", "cat",
-    "grep", "fgrep", "egrep", "cut", "sort", "xz", "md5sum", "sha1sum",
+char *proc_names[] = {"cp", "mv", "dd", "tar", "cat", "rsync",
+    "grep", "fgrep", "egrep", "cut", "sort", "md5sum", "sha1sum",
     "sha224sum", "sha256sum", "sha384sum", "sha512sum", "adb",
+    "gzip", "gunzip", "bzip2", "bunzip2", "xz", "unxz", "lzma", "unlzma",
+    "zcat", "bzcat", "lzcat",
     // Coreutils with 'g' prefixes (MacPorts, BSD, Solaris, etc)
     "gcp", "gmv", "gdd", "gnutar", "gcat", "gcut", "gsort", "gmd5sum",
-    "gsha1sum", "gsha224sum", "gssha256sum", "gsha384sum", "gsha512sum", NULL
+    "gsha1sum", "gsha224sum", "gssha256sum", "gsha384sum", "gsha512sum",
+    NULL
 };
 
+// static means initialized to 0/NULL (C standard, §6.7.8/10)
 static int proc_specifiq_name_cnt;
 static char **proc_specifiq_name;
 static int ignore_file_list_cnt;
 static char **ignore_file_list;
+static int proc_specifiq_pid_cnt;
+static pid_t *proc_specifiq_pid;
 
-pid_t proc_specifiq_pid = 0;
 signed char flag_quiet = 0;
 signed char flag_debug = 0;
 signed char flag_throughput = 0;
 signed char flag_monitor = 0;
 signed char flag_monitor_continuous = 0;
+signed char flag_open_mode = 0;
 double throughput_wait_secs = 1;
 
 WINDOW *mainwin;
@@ -132,7 +138,7 @@ char exe[MAXPATHLEN + 1];
 
 exe[0] = '\0';
 proc_name(pid, exe, sizeof(exe));
-if (strlen(exe) == 0)
+if (exe[0] == '\0')
     return 0;
 
 pid_list[0].pid = pid;
@@ -347,10 +353,12 @@ struct stat stat_buf;
 char fdpath[MAXPATHLEN + 1];
 char line[LINE_LEN];
 FILE *fp;
+int flags;
 #endif
 struct timezone tz;
 
 fd_info->num = fdnum;
+fd_info->mode = PM_NONE;
 
 #ifdef __APPLE__
 struct vnode_fdinfowithpath vnodeInfo;
@@ -417,7 +425,14 @@ if (S_ISBLK(stat_buf.st_mode)) {
 #ifdef __APPLE__
 fd_info->pos = vnodeInfo.pfi.fi_offset;
 gettimeofday(&fd_info->tv, &tz);
+if (vnodeInfo.pfi.fi_openflags & FREAD)
+    fd_info->mode = PM_READ;
+if (vnodeInfo.pfi.fi_openflags & FWRITE)
+    fd_info->mode = PM_WRITE;
+if (vnodeInfo.pfi.fi_openflags & FREAD && vnodeInfo.pfi.fi_openflags & FWRITE)
+    fd_info->mode = PM_READWRITE;
 #else
+flags = 0;
 fd_info->pos = 0;
 
 snprintf(fdpath, MAXPATHLEN, "%s/%d/fdinfo/%d", PROC_PATH, pid, fdnum);
@@ -431,12 +446,19 @@ if (!fp) {
 }
 
 while (fgets(line, LINE_LEN - 1, fp) != NULL) {
-    line[4]=0;
-    if (!strcmp(line, "pos:")) {
+    if (!strncmp(line, "pos:", 4))
         fd_info->pos = atoll(line + 5);
-        break;
-    }
+    if (!strncmp(line, "flags:", 6))
+        flags = atoll(line + 7);
 }
+
+if ((flags & O_ACCMODE) == O_RDONLY)
+    fd_info->mode = PM_READ;
+if ((flags & O_ACCMODE) == O_WRONLY)
+    fd_info->mode = PM_WRITE;
+if ((flags & O_ACCMODE) == O_RDWR)
+    fd_info->mode = PM_READWRITE;
+
 fclose(fp);
 #endif
 return 1;
@@ -475,10 +497,11 @@ static struct option long_options[] = {
     {"command",              required_argument, 0, 'c'},
     {"pid",                  required_argument, 0, 'p'},
     {"ignore-file",          required_argument, 0, 'i'},
+    {"open-mode",            required_argument, 0, 'o'},
     {0, 0, 0, 0}
 };
 
-static char *options_string = "vqdwmMhc:p:W:i:";
+static char *options_string = "vqdwmMhc:p:W:i:o:";
 int c,i;
 int option_index = 0;
 char *rp;
@@ -516,10 +539,11 @@ while(1) {
             printf("  -c --command cmd           monitor only this command name (ex: firefox)\n");
             printf("  -p --pid id                monitor only this process ID (ex: `pidof firefox`)\n");
             printf("  -i --ignore-file file      do not report process if using file\n");
+            printf("  -o --open-mode {r|w}       report only files opened for read or write\n");
             printf("  -v --version               show program version and exit\n");
             printf("  -h --help                  display this help and exit\n");
             printf("\n\n");
-            printf("Multiple options allowed for: -c -i. Use PROGRESS_ARGS for permanent arguments.\n");
+            printf("Multiple options allowed for: -c -p -i. Use PROGRESS_ARGS for permanent arguments.\n");
             exit(EXIT_SUCCESS);
             break;
 
@@ -548,7 +572,9 @@ while(1) {
             break;
 
         case 'p':
-            proc_specifiq_pid = atof(optarg);
+            proc_specifiq_pid_cnt++;
+            proc_specifiq_pid = realloc(proc_specifiq_pid, proc_specifiq_pid_cnt * sizeof(pid_t));
+            proc_specifiq_pid[proc_specifiq_pid_cnt - 1] = atof(optarg);
             break;
 
         case 'w':
@@ -568,6 +594,17 @@ while(1) {
             throughput_wait_secs = atof(optarg);
             break;
 
+        case 'o':
+            if (!strcmp("r", optarg))
+                flag_open_mode = PM_READ;
+            else if (!strcmp("w", optarg))
+                flag_open_mode = PM_WRITE;
+            else {
+                fprintf(stderr,"Invalid --open-mode option value '%s'.\n", optarg);
+                exit(EXIT_FAILURE);
+            }
+            break;
+
         case '?':
         default:
             exit(EXIT_FAILURE);
@@ -583,11 +620,16 @@ if (optind < argc) {
 
 void print_eta(time_t seconds)
 {
-struct tm *p = gmtime(&seconds);
+struct tm *p;
 
-nprintf(" eta ");
+if (!seconds)
+    return;
+
+p = gmtime(&seconds);
+
+nprintf(" remaining ");
 if (p->tm_yday)
-    nprintf("%d day%s, ", p->tm_yday, p->tm_yday > 1 ? "s" : "");
+    nprintf("%d day%s ", p->tm_yday, p->tm_yday > 1 ? "s" : "");
 nprintf("%d:%02d:%02d", p->tm_hour, p->tm_min, p->tm_sec);
 }
 
@@ -636,21 +678,38 @@ float perc;
 result_t results[MAX_RESULTS];
 signed char still_there;
 signed char search_all = 1;
+static signed char first_pass = 1;
 
 pid_count = 0;
 
+if (!flag_monitor && !flag_monitor_continuous)
+    first_pass = 0;
+
+
 if (proc_specifiq_name_cnt) {
-    for (i = 0; i < proc_specifiq_name_cnt; ++i)
+    search_all = 0;
+    for (i = 0 ; i < proc_specifiq_name_cnt ; ++i) {
         pid_count += find_pids_by_binary_name(proc_specifiq_name[i],
                                               pidinfo_list + pid_count,
                                               MAX_PIDS - pid_count);
-    search_all = 0;
+        if(pid_count >= MAX_PIDS) {
+            nfprintf(stderr, "Found too much procs (max = %d)\n",MAX_PIDS);
+            return 0;
+        }
+    }
 }
 
 if (proc_specifiq_pid) {
-    pid_count += find_pid_by_id(proc_specifiq_pid,
-                                  pidinfo_list + pid_count);
     search_all = 0;
+    for (i = 0 ; i < proc_specifiq_pid_cnt ; ++i) {
+        pid_count += find_pid_by_id(proc_specifiq_pid[i],
+                                    pidinfo_list + pid_count);
+
+        if(pid_count >= MAX_PIDS) {
+            nfprintf(stderr, "Found too much procs (max = %d)\n",MAX_PIDS);
+            return 0;
+        }
+    }
 }
 
 if (search_all) {
@@ -660,7 +719,7 @@ if (search_all) {
                                               MAX_PIDS - pid_count);
         if(pid_count >= MAX_PIDS) {
             nfprintf(stderr, "Found too much procs (max = %d)\n",MAX_PIDS);
-            break;
+            return 0;
         }
     }
 }
@@ -674,13 +733,16 @@ if (!pid_count) {
         clear();
 	refresh();
     }
-    if (proc_specifiq_pid) {
-        nfprintf(stderr, "No such pid: %d, ", proc_specifiq_pid);
+    if (proc_specifiq_pid_cnt) {
+        nfprintf(stderr, "No such pid: ");
+        for (i = 0 ; i < proc_specifiq_pid_cnt; ++i) {
+            nfprintf(stderr, "%d, ", proc_specifiq_pid[i]);
+        }
     }
     if (proc_specifiq_name_cnt)
     {
         nfprintf(stderr, "No such command(s) running: ");
-        for (i = 0; i < proc_specifiq_name_cnt; ++i) {
+        for (i = 0 ; i < proc_specifiq_name_cnt; ++i) {
             nfprintf(stderr, "%s, ", proc_specifiq_name[i]);
         }
     }
@@ -691,6 +753,7 @@ if (!pid_count) {
         }
     }
     nfprintf(stderr,"or wrong permissions.\n");
+    first_pass = 0;
     return 0;
 }
 
@@ -704,6 +767,11 @@ for (i = 0 ; i < pid_count ; i++) {
     // let's find the biggest opened file
     for (j = 0 ; j < fd_count ; j++) {
         get_fdinfo(pidinfo_list[i].pid, fdnum_list[j], &fdinfo);
+
+        if (flag_open_mode == PM_READ && fdinfo.mode != PM_READ && fdinfo.mode != PM_READWRITE)
+            continue;
+        if (flag_open_mode == PM_WRITE && fdinfo.mode != PM_WRITE && fdinfo.mode != PM_READWRITE)
+            continue;
 
         if (fdinfo.size > max_size) {
             biggest_fd = fdinfo;
@@ -731,7 +799,7 @@ for (i = 0 ; i < pid_count ; i++) {
 }
 
 // wait a bit, so we can estimate the throughput
-if (flag_throughput)
+if (flag_throughput && !first_pass)
     usleep(1000000 * throughput_wait_secs);
 if (flag_monitor || flag_monitor_continuous) {
     clear();
@@ -739,7 +807,7 @@ if (flag_monitor || flag_monitor_continuous) {
 copy_and_clean_results(results, result_count, 1);
 for (i = 0 ; i < result_count ; i++) {
 
-    if (flag_throughput) {
+    if (flag_throughput && !first_pass) {
         still_there = get_fdinfo(results[i].pid.pid, results[i].fd.num, &fdinfo);
         if (still_there && strcmp(results[i].fd.name, fdinfo.name))
             still_there = 0; // still there, but it's not the same file !
@@ -759,7 +827,7 @@ for (i = 0 ; i < result_count ; i++) {
 
     }
 
-    nprintf("[%5d] %s %s %.1f%% (%s / %s)",
+    nprintf("[%5d] %s %s\n\t%.1f%% (%s / %s)",
         results[i].pid.pid,
         results[i].pid.name,
         results[i].fd.name,
@@ -767,7 +835,7 @@ for (i = 0 ; i < result_count ; i++) {
         fpos,
         fsize);
 
-    if (flag_throughput && still_there) {
+    if (flag_throughput && still_there && !first_pass) {
         // results[i] vs fdinfo
         long long usec_diff;
         off_t byte_diff;
@@ -781,13 +849,13 @@ for (i = 0 ; i < result_count ; i++) {
 
         format_size(bytes_per_sec, ftroughput);
         nprintf(" %s/s", ftroughput);
-        if (bytes_per_sec && fdinfo.size - fdinfo.pos > 0) {
+        if (bytes_per_sec && fdinfo.size - fdinfo.pos >= 0) {
             print_eta((fdinfo.size - fdinfo.pos) / bytes_per_sec);
         }
     }
 
 
-    nprintf("\n");
+    nprintf("\n\n");
 
     // Need to work on window width when using screen/watch/...
     //~ printf("    [");
@@ -800,11 +868,13 @@ if (flag_monitor || flag_monitor_continuous) {
     refresh();
 }
 copy_and_clean_results(results, result_count, 0);
+first_pass = 0;
 return 0;
 }
 
 void int_handler(int sig)
 {
+(void)sig;
 if(flag_monitor || flag_monitor_continuous)
     endwin();
 exit(0);
@@ -820,7 +890,6 @@ char *env_progress_args_full;
 
 env_progress_args = getenv("PROGRESS_ARGS");
 
-parse_options(argc,argv);
 if (env_progress_args) {
     int full_len;
 
@@ -836,6 +905,7 @@ if (env_progress_args) {
     }
     parse_options(env_wordexp.we_wordc,env_wordexp.we_wordv);
 }
+parse_options(argc,argv);
 
 // ws.ws_row, ws.ws_col
 ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws);

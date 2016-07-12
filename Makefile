@@ -1,6 +1,19 @@
 OBJ = progress
 override CFLAGS += -g -Wall -D_FILE_OFFSET_BITS=64
-override LDFLAGS += -lncurses -lm
+override LDFLAGS += -lm
+UNAME := $(shell uname)
+ifeq ($(UNAME), Linux)
+    ifeq (, $(shell which pkg-config 2> /dev/null))
+    $(error "pkg-config command not found")
+    endif
+    ifeq (, $(shell pkg-config ncurses --libs 2> /dev/null))
+    $(error "ncurses package not found")
+    endif
+    override LDFLAGS += $(shell pkg-config ncurses --libs)
+endif
+ifeq ($(UNAME), Darwin)
+    override LDFLAGS += -lncurses
+endif
 PREFIX ?= /usr/local
 BINDIR = $(PREFIX)/bin
 MANDIR = $(PREFIX)/share/man/man1

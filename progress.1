@@ -48,7 +48,7 @@ hides all messages
 shows all warning/error messages
 .TP
 .B \-w (\-\-wait)
-estimate I/O throughput and ETA (slower display)
+estimate I/O throughput and estimated remaining time (slower display)
 .TP
 .B \-W (\-\-wait\-delay secs)
 wait 'secs' seconds for I/O estimation (implies
@@ -64,7 +64,8 @@ like monitor but never stop (similar to
 )
 .TP
 .B \-c (\-\-command cmd)
-monitor only this command name (ex: firefox)
+monitor only this command name (ex: firefox). This option can be used multiple
+times on the command line.
 .TP
 .B \-p (\-\-pid id)
 monitor only this numeric process ID (ex: \`pidof firefox\`). This option can
@@ -75,6 +76,10 @@ do not report a process for 'file'. If the file does not exist yet, you must
 give a full and clean absolute path. This option can be used multiple times
 on the command line.
 .TP
+.B \-o (\-\-open-mode {r|w})
+report only files opened for read or write by the process. This option is
+useful when you want to monitor only output files (or input ones) of a process.
+.TP
 .B \-v (\-\-version)
 show program version and exit
 .TP
@@ -83,6 +88,7 @@ display help message and exit
 
 .SH ENVIRONMENT
 It's possible to give permanent options using PROGRESS_ARGS environment variable.
+See example below. Command line arguments take precedence over environment.
 
 .SH EXAMPLES
 
@@ -108,6 +114,13 @@ Launch and monitor any heavy command using $!
 .RS
 
 .B cp bigfile newfile & progress \-mp $!
+
+
+.RE
+Use environment variable to set permanent (multiple) arguments
+.RS
+
+.B export PROGRESS_ARGS='-M \-\-ignore-file ~/.xsession-errors'
 
 .RE
 .SH BUGS
